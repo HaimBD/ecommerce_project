@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Search: {{ q }}{% endblock %}
+{% block content %}
+<h1>Search results</h1>
+<p>Query: <strong>{{ q }}</strong></p>
+<div class="grid">
+{% for p in products %}
+  <div class="card">
+    <h3><a href="{{ url_for('catalog.product_detail', product_id=p.id) }}">{{ p.name }}</a></h3>
+    <p>{{ p.description[:120] }}{% if p.description and p.description|length > 120 %}…{% endif %}</p>
+    <strong>${{ '%.2f'|format(p.price) }}</strong>
+  </div>
+{% else %}
+  <p>No results.</p>
+{% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Your Cart · E‑Shop{% endblock %}
+{% block content %}
+<h1>Your Cart</h1>
+{% if items %}
+<table>
+  <thead><tr><th>Product</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
+  <tbody>
+  {% for it in items %}
+    <tr>
+      <td>{{ it.product.name }}</td>
+      <td>{{ it.qty }}</td>
+      <td>${{ '%.2f'|format(it.product.price) }}</td>
+      <td>${{ '%.2f'|format(it.line_total) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+  <tfoot>
+    <tr><td colspan="3" style="text-align:right;"><strong>Grand Total</strong></td><td><strong>${{ '%.2f'|format(total) }}</strong></td></tr>
+  </tfoot>
+</table>
+<form method="post" action="{{ url_for('orders.checkout') }}">
+  <button type="submit">Checkout</button>
+</form>
+<form method="post" action="{{ url_for('orders.clear_cart') }}" style="margin-top:8px;">
+  <button type="submit">Clear Cart</button>
+</form>
+{% else %}
+<p>Your cart is empty.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Products · E‑Shop{% endblock %}
+{% block content %}
+<h1>Products</h1>
+<form method="get" action="{{ url_for('catalog.list_products') }}">
+  <input type="text" name="q" placeholder="Search products..." value="{{ request.args.get('q','') }}"/>
+  <button type="submit">Search</button>
+</form>
+<div class="grid">
+{% for p in products %}
+  <div class="card">
+    <h3><a href="{{ url_for('catalog.product_detail', product_id=p.id) }}">{{ p.name }}</a></h3>
+    <p>{{ p.description[:120] }}{% if p.description and p.description|length > 120 %}…{% endif %}</p>
+    <strong>${{ '%.2f'|format(p.price) }}</strong>
+    <form method="post" action="{{ url_for('orders.add_to_cart', pid=p.id) }}">
+      <input type="number" name="qty" min="1" value="1" />
+      <button type="submit">Add to cart</button>
+    </form>
+  </div>
+{% else %}
+  <p>No products yet.</p>
+{% endfor %}
+</div>
+{% endblock %}

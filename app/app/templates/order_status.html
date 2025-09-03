@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Track Order #{{ order.id }} · E‑Shop{% endblock %}
+{% block content %}
+<h1>Order #{{ order.id }}</h1>
+<p>Status: <span id="status">{{ order.status }}</span></p>
+<ul>
+{% for item in order.items %}
+  <li>{{ item.quantity }} × {{ item.product.name }} — ${{ '%.2f'|format(item.price_each) }}</li>
+{% endfor %}
+</ul>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const orderId = {{ order.id }};
+  const socket = io();
+  socket.on('connect', () => {
+    socket.emit('join_order', {order_id: orderId});
+  });
+  socket.on('order_update', (data) => {
+    if (data.order_id === orderId) {
+      document.getElementById('status').textContent = data.status;
+    }
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Admin · Orders{% endblock %}
+{% block content %}
+<h1>Admin · Orders</h1>
+<table>
+<thead><tr><th>ID</th><th>User</th><th>Status</th><th>Total</th><th>Updated</th><th>Action</th></tr></thead>
+<tbody>
+{% for o in orders %}
+<tr>
+  <td><a href="{{ url_for('orders.track', order_id=o.id) }}">#{{ o.id }}</a></td>
+  <td>{{ o.user_id }}</td>
+  <td>{{ o.status }}</td>
+  <td>${{ '%.2f'|format(o.total_amount) }}</td>
+  <td>{{ o.updated_at }}</td>
+  <td>
+    <form action="{{ url_for('orders.admin_update_status', oid=o.id) }}" method="post" style="display:inline">
+      <select name="status">
+        {% for s in ['PLACED','PROCESSING','SHIPPED','DELIVERED','CANCELLED'] %}
+          <option value="{{ s }}" {% if s == o.status %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Update</button>
+    </form>
+  </td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% endblock %}
