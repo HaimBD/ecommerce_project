@@ -1,11 +1,20 @@
-
+############################################################
+# root/main.tf — VPC (child), EKS on PUBLIC subnets, RDS, OpenSearch, DynamoDB
+############################################################
 
 terraform {
-  required_version = ">= 1.5.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">= 5.95.0, < 6.0.0"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.29"
+    }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 2.13"
     }
     random = {
       source  = "hashicorp/random"
@@ -16,165 +25,215 @@ terraform {
 
 provider "aws" {
   region = var.region
+
+  default_tags {
+    tags = {
+      Project     = var.project
+      Environment = var.environment
+    }
+  }
 }
 
+# Who runs Terraform? Use this ARN for cluster admin
 data "aws_caller_identity" "current" {}
 
-
-resource "aws_security_group" "rds" {
-  name        = "${var.db_identifier}-sg"
-  description = "RDS access for ${var.db_identifier}"
-  vpc_id      = var.vpc_id
-
-
-  ingress {
-    description      = "App/EKS to RDS"
-    from_port        = var.db_port
-    to_port          = var.db_port
-    protocol         = "tcp"
-    security_groups  = [var.app_sg_id] # only this SG can connect
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = var.tags
+locals {
+  name         = var.name
+  cluster_name = var.cluster_name
+  db_name      = "${var.project}-db"
+  os_domain    = "${var.project}-os"
+  ddb_table    = "${var.project}-orders"
+  admin_arn    = data.aws_caller_identity.current.arn
 }
 
+# -------------------------
+# VPC (child module)
+# -------------------------
+module "vpc" {
+  source = "./aws_vpc"
 
-resource "aws_db_subnet_group" "rds" {
-  name       = "${var.db_identifier}-subnets"
-  subnet_ids = var.private_subnet_ids
-  tags       = var.tags
-}
+  vpc_name            = local.name
+  vpc_cidr            = var.vpc_cidr
+  vpc_public_subnets  = var.public_subnet_cidrs
+  vpc_private_subnets = var.private_subnet_cidrs
 
+  enable_nat_gateway     = true
+  single_nat_gateway     = true
+  one_nat_gateway_per_az = false
 
-resource "aws_db_parameter_group" "rds" {
-  name        = "${var.db_identifier}-params"
-  family      = var.engine_family          # e.g., "postgres16" or "mysql8.0"
-  description = "Parameters for ${var.db_identifier}"
+  public_subnet_tags  = var.public_subnet_tags
+  private_subnet_tags = var.private_subnet_tags
 
-  # Add your favorite tuning here:
-  parameters = [
-    {
-      name  = "log_min_duration_statement"
-      value = "250"            # ms
-    },
-    {
-      name  = "rds.force_ssl"
-      value = "1"
-      apply_method = "pending-reboot"
-    }
-  ]
-
-  tags = var.tags
-}
-
-
-resource "random_password" "db" {
-  length           = 32
-  special          = true
-  override_characters = "!@#%^*-_=+?"
-}
-
-resource "aws_secretsmanager_secret" "db" {
-  name = "${var.db_identifier}/credentials"
-  tags = var.tags
-}
-
-resource "aws_secretsmanager_secret_version" "db" {
-  secret_id     = aws_secretsmanager_secret.db.id
-  secret_string = jsonencode({
-    username = var.master_username
-    password = random_password.db.result
-  })
-}
-
-
-data "aws_iam_policy_document" "monitoring_assume" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["monitoring.rds.amazonaws.com"]
-    }
+  tags = {
+    Project     = "platform"
+    Environment = var.environment
   }
 }
 
-resource "aws_iam_role" "rds_monitoring" {
-  name               = "${var.db_identifier}-monitoring"
-  assume_role_policy = data.aws_iam_policy_document.monitoring_assume.json
-  tags               = var.tags
+# -------------------------
+# EKS (child) — USE PUBLIC SUBNETS
+# -------------------------
+module "eks" {
+  source = "./aws_eks"
+
+  vpc_id             = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.public_subnet_ids
+
+  cluster_name    = local.cluster_name
+  cluster_version = var.cluster_version
+  region          = var.region
+  environment     = var.environment
+  aws_profile     = "default"
+
+  # ✅ Pass the principal to be granted cluster-admin
+  admin_principal_arn       = local.admin_arn
+
+  eks_public_endpoint_cidrs = var.eks_public_endpoint_cidrs
+
+  enable_external_dns             = var.enable_external_dns
+  enable_fluentbit                = var.enable_fluentbit
+  enable_cloudwatch_observability = var.enable_cloudwatch_observability
 }
 
-resource "aws_iam_role_policy_attachment" "rds_monitoring" {
-  role       = aws_iam_role.rds_monitoring.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
+# App SG
+resource "aws_security_group" "app" {
+  name        = "${var.project}-app"
+  description = "App/EKS to data-plane access"
+  vpc_id      = module.vpc.vpc_id
 }
 
+# -------------------------
+# RDS (private subnets)
+# -------------------------
+module "rds" {
+  source = "./aws_rds"
 
-resource "aws_db_instance" "rds" {
-  identifier                  = var.db_identifier
-  engine                      = var.engine              # "postgres" | "mysql"
-  engine_version              = var.engine_version      # e.g., "16.3" or "8.0.36"
-  instance_class              = var.instance_class      # e.g., "db.t4g.medium"
-  allocated_storage           = var.allocated_storage
-  max_allocated_storage       = var.max_allocated_storage
+  vpc_id             = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.private_subnet_ids
 
-  username                    = var.master_username
-  password                    = random_password.db.result
+  app_sg_ids = compact([
+    try(module.eks.node_security_group_id, null),
+    aws_security_group.app.id
+  ])
 
-  port                        = var.db_port
-  db_subnet_group_name        = aws_db_subnet_group.rds.name
-  vpc_security_group_ids      = [aws_security_group.rds.id]
-  parameter_group_name        = aws_db_parameter_group.rds.name
+  environment           = var.environment
+  db_identifier         = local.db_name
+  engine                = var.db_engine
+  engine_version        = var.db_engine_version
+  engine_family         = var.db_engine_family
+  instance_class        = var.db_instance_class
+  allocated_storage     = var.db_allocated_storage
+  max_allocated_storage = var.db_max_allocated_storage
+  backup_retention_days = var.db_backup_retention_days
+  maintenance_window    = var.db_maintenance_window
+  backup_window         = var.db_backup_window
+  multi_az              = var.db_multi_az
+  master_username       = var.db_master_username
+  master_password       = var.db_master_password
 
-  multi_az                    = var.multi_az
-  storage_type                = "gp3"
-  iops                        = var.iops
-  storage_throughput          = var.storage_throughput
-
-  backup_retention_period     = var.backup_retention_days
-  backup_window               = var.backup_window
-  maintenance_window          = var.maintenance_window
-  auto_minor_version_upgrade  = true
-  apply_immediately           = false
-
-  deletion_protection         = var.deletion_protection
-  skip_final_snapshot         = var.skip_final_snapshot
-  final_snapshot_identifier   = var.skip_final_snapshot ? null : "${var.db_identifier}-final-${formatdate("YYYYMMDDhhmmss", timestamp())}"
-
-  performance_insights_enabled = var.performance_insights_enabled
-  performance_insights_retention_period = var.performance_insights_retention
-  monitoring_interval          = var.monitoring_interval   # >= 1 to enable EM
-  monitoring_role_arn          = var.monitoring_interval > 0 ? aws_iam_role.rds_monitoring.arn : null
-
-  publicly_accessible          = false
-  copy_tags_to_snapshot        = true
-
-  # Require SSL at the client level (pair with rds.force_ssl in parameter group)
-  ca_cert_identifier           = var.ca_cert_identifier    # e.g., "rds-ca-rsa2048-g1"
-
-  tags = var.tags
-
-  depends_on = [
-    aws_secretsmanager_secret_version.db
-  ]
+  tags = {
+    Component   = "rds"
+    Project     = var.project
+    Environment = var.environment
+  }
 }
 
+# -------------------------
+# OpenSearch (private subnets)
+# -------------------------
+module "opensearch" {
+  source         = "./aws_elasticsearch"
+  region         = var.region
+  domain_name    = local.os_domain
+  engine_version = var.os_engine_version
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnet_ids
+
+  allowed_cidrs    = length(var.os_allowed_cidrs) > 0 ? var.os_allowed_cidrs : [var.vpc_cidr]
+  allowed_iam_arns = var.os_allowed_iam_arns
+
+  kms_key_id                    = var.os_kms_key_id
+  tls_security_policy           = var.os_tls_security_policy
+  cw_log_group_arn              = var.os_cw_log_group_arn
+  automated_snapshot_start_hour = var.os_snapshot_hour
+
+  instance_type           = var.os_instance_type
+  instance_count          = var.os_instance_count
+  zone_awareness_enabled  = var.os_zone_awareness_enabled
+  availability_zone_count = var.os_availability_zone_count
+  master_enabled          = var.os_master_enabled
+  master_instance_type    = var.os_master_instance_type
+  master_instance_count   = var.os_master_instance_count
+
+  ultrawarm_enabled = var.os_ultrawarm_enabled
+  ultrawarm_type    = var.os_ultrawarm_type
+  ultrawarm_count   = var.os_ultrawarm_count
+
+  ebs_volume_type = var.os_ebs_volume_type
+  ebs_volume_size = var.os_ebs_volume_size
+  ebs_iops        = var.os_ebs_iops
+  ebs_throughput  = var.os_ebs_throughput
+
+  fgac_internal_user_db = var.os_fgac_internal_user_db
+  master_user_name      = var.os_master_user_name
+  master_user_password  = var.os_master_user_password
+
+  cognito_enabled          = var.os_cognito_enabled
+  cognito_user_pool_id     = var.os_cognito_user_pool_id
+  cognito_identity_pool_id = var.os_cognito_identity_pool_id
+  cognito_role_arn         = var.os_cognito_role_arn
+
+  custom_endpoint_enabled         = var.os_custom_endpoint_enabled
+  custom_endpoint                 = var.os_custom_endpoint
+  custom_endpoint_certificate_arn = var.os_custom_endpoint_certificate_arn
+
+  tags = {
+    Component   = "opensearch"
+    Project     = var.project
+    Environment = var.environment
+  }
+}
+
+# -------------------------
+# DynamoDB
+# -------------------------
+module "dynamodb" {
+  source        = "./aws_dynamodb"
+  table_name    = local.ddb_table
+  hash_key      = "order_id"
+  hash_key_type = "S"
+  billing_mode  = "PAY_PER_REQUEST"
+  tags          = var.tags
+}
+
+# -------------------------
+# Outputs
+# -------------------------
+output "vpc_id" {
+  value = module.vpc.vpc_id
+}
+
+output "public_subnet_ids" {
+  value = module.vpc.public_subnet_ids
+}
+
+output "private_subnet_ids" {
+  value = module.vpc.private_subnet_ids
+}
+
+output "eks_cluster_name" {
+  value = var.cluster_name
+}
 
 output "rds_endpoint" {
-  value = aws_db_instance.rds.address
+  value = module.rds.db_endpoint
 }
 
-output "rds_port" {
-  value = aws_db_instance.rds.port
+output "opensearch_endpoint" {
+  value = try(module.opensearch.opensearch_endpoint, null)
 }
 
-output "db_secret_arn" {
-  value = aws_secretsmanager_secret.db.arn
+output "dynamodb_table_name" {
+  value = module.dynamodb.table_name
 }

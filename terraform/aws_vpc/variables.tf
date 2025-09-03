@@ -8,8 +8,6 @@ variable "vpc_cidr" {
   type        = string
 }
 
-
-
 variable "vpc_private_subnets" {
   description = "Private subnet CIDRs"
   type        = list(string)
@@ -20,41 +18,40 @@ variable "vpc_public_subnets" {
   type        = list(string)
 }
 
+# NAT / VPN toggles
 variable "enable_nat_gateway" {
   description = "Create NAT gateway(s)"
   type        = bool
   default     = true
 }
 
-variable "enable_vpn_gateway" {
-  description = "Create VPN gateway"
+variable "single_nat_gateway" {
+  description = "Use a single NAT gateway for the whole VPC"
   type        = bool
   default     = true
 }
 
-variable "one_nat_gateway_per_az"  {
-    type = bool
-    default = true
-    }
-variable "single_nat_gateway" {
-    type = bool
-    default = false
-    }
+variable "one_nat_gateway_per_az" {
+  description = "Create one NAT per AZ (set to true only if single_nat_gateway=false)"
+  type        = bool
+  default     = false
+}
 
+# Tags
 variable "tags" {
-  description = "Practice-vpc"
+  description = "Tags for VPC and children"
   type        = map(string)
-  default     = {Env: "Practice"}
+  default     = { Env = "Practice" }
 }
 
 variable "public_subnet_tags" {
-  description = "Map of tags for each public subnet"
-  type        = map(map(string))
+  description = "Extra tags for each public subnet"
+  type        = map(string)
   default     = {}
 }
 
 variable "private_subnet_tags" {
-  description = "Map of tags for each private subnet"
-  type        = map(map(string))
+  description = "Extra tags for each private subnet"
+  type        = map(string)
   default     = {}
 }

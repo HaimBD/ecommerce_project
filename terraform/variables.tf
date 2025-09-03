@@ -26,7 +26,7 @@ variable "environment" {
 
 variable "name" {
   type    = string
-  default = "shared"
+  default = "hbd-vpc"
 }
 
 # VPC
